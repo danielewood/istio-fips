@@ -55,7 +55,7 @@ jobs:
     needs: discover
     if: needs.discover.outputs.versions != '[]'
     runs-on: ${{ matrix.arch.runner }}
-    timeout-minutes: 330
+    timeout-minutes: 30  # TODO: restore to 330 after cache testing
     permissions:
       contents: read
     strategy:
@@ -110,17 +110,27 @@ jobs:
           sudo dpkg -i "${DEB}"
           rm "${DEB}"
 
-      - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.18.0
+      - name: Restore Bazel disk cache
+        uses: actions/cache/restore@v4
         with:
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.istio_version }}-${{ matrix.arch.name }}
-          repository-cache: false
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-${{ github.run_id }}
+          restore-keys: |
+            bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-
 
       - name: Build Envoy with FIPS BoringSSL
         id: envoy-build
         continue-on-error: true
+        env:
+          BAZEL_DISK_CACHE: ~/.cache/bazel-disk
         run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage envoy
+
+      - name: Save Bazel disk cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-${{ github.run_id }}
 
       - name: Verify Envoy binary exists
         run: |

@@ -107,7 +107,11 @@ def build_envoy(version: str) -> None:
     )
 
     # https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/ssl#fips-140-2
-    Path("proxy/user.bazelrc").write_text("build --define boringssl=fips\n")
+    bazelrc_lines = ["build --define boringssl=fips"]
+    disk_cache = os.environ.get("BAZEL_DISK_CACHE")
+    if disk_cache:
+        bazelrc_lines.append(f"build --disk_cache={disk_cache}")
+    Path("proxy/user.bazelrc").write_text("\n".join(bazelrc_lines) + "\n")
     run("make build_envoy", cwd="proxy")
 
 
