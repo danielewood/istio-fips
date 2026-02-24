@@ -102,13 +102,14 @@ jobs:
           # LLVM toolchain needs libtinfo5 which isn't in noble repos
           ARCH=$(dpkg --print-architecture)
           if [ "$ARCH" = "arm64" ]; then
-            # No arm64 libtinfo5 package exists — symlink libtinfo6 instead
-            sudo ln -sf /lib/aarch64-linux-gnu/libtinfo.so.6 /lib/aarch64-linux-gnu/libtinfo.so.5
+            DEB="libtinfo5_6.3-2_arm64.deb"
+            curl -sfLO "http://ports.ubuntu.com/pool/universe/n/ncurses/${DEB}"
           else
-            curl -sfLO "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
-            sudo dpkg -i "libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
-            rm "libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
+            DEB="libtinfo5_6.3-2ubuntu0.1_amd64.deb"
+            curl -sfLO "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/${DEB}"
           fi
+          sudo dpkg -i "${DEB}"
+          rm "${DEB}"
 
       - name: Setup Bazel
         uses: bazel-contrib/setup-bazel@0.18.0
