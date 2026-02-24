@@ -10,6 +10,15 @@ on:
         required: false
         default: ''
         type: string
+      arch:
+        description: 'Architecture to build (leave empty for both)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - amd64
+          - arm64
   # push:
   #   branches:
   #     - master
@@ -59,6 +68,9 @@ jobs:
             runner: ubuntu-24.04
           - name: arm64
             runner: ubuntu-24.04-arm
+        exclude:
+          - arch:
+              name: ${{ inputs.arch == 'arm64' && 'amd64' || inputs.arch == 'amd64' && 'arm64' || 'none' }}
     steps:
       - name: Free up disk space
         run: |
@@ -144,6 +156,9 @@ jobs:
             runner: ubuntu-24.04
           - name: arm64
             runner: ubuntu-24.04-arm
+        exclude:
+          - arch:
+              name: ${{ inputs.arch == 'arm64' && 'amd64' || inputs.arch == 'amd64' && 'arm64' || 'none' }}
     steps:
       - name: Free up disk space
         run: |
@@ -193,6 +208,7 @@ jobs:
   manifest:
     name: Create manifest for Istio ${{ matrix.istio_version }}
     needs: [discover, build-istio]
+    if: inputs.arch == ''
     runs-on: ubuntu-latest
     permissions:
       packages: write
