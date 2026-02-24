@@ -168,16 +168,19 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
     )
 
     # Build pilot and proxyv2
+    # Pass arch as Make command-line args to override Makefile-internal assignments
     build_env = {
         **env,
         "BASE_VERSION": tags,
         "ISTIO_BASE_REGISTRY": build_hub,
         "HUB": build_hub,
         "DOCKER_BUILD_VARIANTS": "distroless",
-        "TARGET_OS": "linux",
-        "TARGET_ARCH": arch,
     }
-    run("make docker.proxyv2 docker.pilot", env=build_env, cwd="istio")
+    run(
+        f"make TARGET_OS=linux TARGET_ARCH={arch} GOARCH={arch} docker.proxyv2 docker.pilot",
+        env=build_env,
+        cwd="istio",
+    )
 
 
 # ---------------------------------------------------------------------------
