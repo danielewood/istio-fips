@@ -13,10 +13,10 @@ on:
       arch:
         description: 'Architecture to build'
         required: false
-        default: 'both'
+        default: 'all'
         type: choice
         options:
-          - both
+          - all
           - amd64
           - arm64
   # push:
@@ -208,7 +208,7 @@ jobs:
   manifest:
     name: Create manifest for Istio ${{ matrix.istio_version }}
     needs: [discover, build-istio]
-    if: inputs.arch == 'both' || inputs.arch == ''
+    if: inputs.arch == 'all' || inputs.arch == ''
     runs-on: ubuntu-latest
     permissions:
       packages: write
