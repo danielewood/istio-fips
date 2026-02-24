@@ -323,7 +323,7 @@ def main() -> None:
             "TARGET_OS": "linux",
             "TARGET_ARCH": arch,
             "BUILD_WITH_CONTAINER": "0",
-            "BAZEL_BUILD_ARGS": "--config=release --verbose_failures --local_ram_resources=HOST_RAM*.8 --host_jvm_args=-Xmx2g --worker_max_instances=2 --discard_analysis_cache",
+            "BAZEL_BUILD_ARGS": "--config=release --verbose_failures --local_ram_resources=HOST_RAM*.8 --worker_max_instances=2 --discard_analysis_cache",
         }
     )
 
