@@ -101,7 +101,12 @@ jobs:
             libstdc++-12-dev
           # LLVM toolchain needs libtinfo5 which isn't in noble repos - grab from jammy
           ARCH=$(dpkg --print-architecture)
-          curl -sLO "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
+          if [ "$ARCH" = "arm64" ]; then
+            MIRROR="http://ports.ubuntu.com"
+          else
+            MIRROR="http://archive.ubuntu.com"
+          fi
+          curl -sfLO "${MIRROR}/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
           sudo dpkg -i "libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
           rm "libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
 
