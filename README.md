@@ -24,18 +24,18 @@ Manual builds can target a specific version via workflow dispatch.
 
 ```sh
 # Build a specific version
-uv run ./build.py --version 1.26.2
+uv run ./build.py --version 1.29.0
 
 # Build the latest release
 uv run ./build.py --version latest
 
 # Push to a custom registry
-EXPORT_HUB=myregistry.example.com/istio uv run ./build.py --version 1.26.2
+EXPORT_HUB=myregistry.example.com/istio uv run ./build.py --version 1.29.0
 ```
 
 ## Images
 
 ```sh
-docker pull ghcr.io/danielewood/istio-fips/proxyv2:1.26-fips
-docker pull ghcr.io/danielewood/istio-fips/pilot:1.26-fips
+docker pull ghcr.io/danielewood/istio-fips/proxyv2:1.29-fips
+docker pull ghcr.io/danielewood/istio-fips/pilot:1.29-fips
 ```

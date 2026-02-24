@@ -52,7 +52,7 @@ def run(
 
 def resolve_version(version_arg: str | None) -> str:
     if not version_arg:
-        return os.environ.get("ISTIO_VERSION", "1.26.2")
+        return os.environ.get("ISTIO_VERSION", "1.29.0")
 
     if version_arg == "latest":
         resp = urlopen("https://api.github.com/repos/istio/istio/releases/latest")
