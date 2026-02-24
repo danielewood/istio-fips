@@ -23,7 +23,7 @@ jobs:
     permissions:
       packages: read
     outputs:
-      matrix: ${{ steps.resolve.outputs.matrix }}
+      versions: ${{ steps.resolve.outputs.versions }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -42,10 +42,10 @@ jobs:
         run: uv run ./discover.py
 
   build:
-    name: Build Istio ${{ matrix.istio_version }}
+    name: Build Istio ${{ matrix.istio_version }} (${{ matrix.arch.name }})
     needs: discover
-    if: needs.discover.outputs.matrix != '[]'
-    runs-on: ubuntu-24.04
+    if: needs.discover.outputs.versions != '[]'
+    runs-on: ${{ matrix.arch.runner }}
     permissions:
       id-token: write
       contents: write
@@ -53,9 +53,14 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 4
       matrix:
-        include: ${{ fromJson(needs.discover.outputs.matrix) }}
+        istio_version: ${{ fromJson(needs.discover.outputs.versions) }}
+        arch:
+          - name: amd64
+            runner: ubuntu-24.04
+          - name: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Free up disk space
         run: |
@@ -95,19 +100,51 @@ jobs:
             libc++abi-18-dev \
             libstdc++-12-dev
           # LLVM toolchain needs libtinfo5 which isn't in noble repos - grab from jammy
-          curl -sLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
-          sudo dpkg -i libtinfo5_6.3-2ubuntu0.1_amd64.deb
-          rm libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          ARCH=$(dpkg --print-architecture)
+          curl -sLO "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
+          sudo dpkg -i "libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
+          rm "libtinfo5_6.3-2ubuntu0.1_${ARCH}.deb"
 
       - name: Setup Bazel
         uses: bazel-contrib/setup-bazel@0.18.0
         with:
           bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.istio_version }}
+          disk-cache: ${{ github.workflow }}-${{ matrix.istio_version }}-${{ matrix.arch.name }}
           repository-cache: true
 
       - name: Build and push images
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPORT_HUB: ghcr.io/${{ github.repository }}
-        run: uv run ./build.py --version ${{ matrix.istio_version }}
+        run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }}
+
+  manifest:
+    name: Create manifest for Istio ${{ matrix.istio_version }}
+    needs: [discover, build]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        istio_version: ${{ fromJson(needs.discover.outputs.versions) }}
+    env:
+      EXPORT_HUB: ghcr.io/${{ github.repository }}
+    steps:
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Create multi-arch manifests
+        run: |
+          EXPORT_HUB="${EXPORT_HUB,,}"
+          VERSION="${{ matrix.istio_version }}"
+          MAJOR="${VERSION%.*}"
+          TAGS=("${MAJOR}-fips" "${VERSION}-fips")
+
+          for IMAGE in proxyv2 pilot; do
+            for TAG in "${TAGS[@]}"; do
+              echo "Creating manifest: ${EXPORT_HUB}/${IMAGE}:${TAG}"
+              docker buildx imagetools create -t "${EXPORT_HUB}/${IMAGE}:${TAG}" \
+                "${EXPORT_HUB}/${IMAGE}:${TAG}-amd64" \
+                "${EXPORT_HUB}/${IMAGE}:${TAG}-arm64"
+            done
+          done

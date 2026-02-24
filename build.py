@@ -9,16 +9,26 @@ import argparse
 import atexit
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 IMAGES = ["proxyv2", "pilot"]
+
+
+def detect_arch() -> str:
+    machine = platform.machine()
+    if machine in ("x86_64", "amd64"):
+        return "amd64"
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    sys.exit(f"Unsupported architecture: {machine}")
 
 
 def run(
@@ -80,7 +90,7 @@ def resolve_version(version_arg: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def start_registry():
+def start_registry() -> None:
     run("docker run --rm -d -p 5000:5000 --name local-registry registry:2")
     time.sleep(2)
     atexit.register(lambda: run("docker rm local-registry -f", check=False))
@@ -91,7 +101,7 @@ def start_registry():
 # ---------------------------------------------------------------------------
 
 
-def build_envoy(version: str):
+def build_envoy(version: str) -> None:
     run(
         f"git clone https://github.com/istio/proxy.git --depth 1 --branch {version} --single-branch"
     )
@@ -106,7 +116,7 @@ def build_envoy(version: str):
 # ---------------------------------------------------------------------------
 
 
-def build_istio(version: str, build_hub: str, tags: str):
+def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
     run(
         f"git clone https://github.com/istio/istio.git --depth 1 --branch {version} --single-branch"
     )
@@ -117,7 +127,7 @@ def build_istio(version: str, build_hub: str, tags: str):
     deps = json.loads((istio_dir / "istio.deps").read_text())
     proxy_sha = next(d["lastStableSHA"] for d in deps if d["name"] == "PROXY_REPO_SHA")
 
-    release_dir = istio_dir / "out/linux_amd64/release"
+    release_dir = istio_dir / f"out/linux_{arch}/release"
     release_dir.mkdir(parents=True, exist_ok=True)
 
     envoy_src = Path("proxy/bazel-bin/envoy")
@@ -147,12 +157,12 @@ def build_istio(version: str, build_hub: str, tags: str):
     go_bin = Path.home() / "go/bin"
     env = {**os.environ, "PATH": f"{go_bin}:{os.environ['PATH']}"}
     run(
-        f"apko publish --arch=amd64 docker/iptables.yaml {build_hub}/iptables:{tags}",
+        f"apko publish --arch={arch} docker/iptables.yaml {build_hub}/iptables:{tags}",
         env=env,
         cwd="istio",
     )
     run(
-        f"apko publish --arch=amd64 {SCRIPT_DIR}/distroless.yaml {build_hub}/distroless:{tags}",
+        f"apko publish --arch={arch} {SCRIPT_DIR}/distroless.yaml {build_hub}/distroless:{tags}",
         env=env,
         cwd="istio",
     )
@@ -165,6 +175,7 @@ def build_istio(version: str, build_hub: str, tags: str):
         "HUB": build_hub,
         "DOCKER_BUILD_VARIANTS": "distroless",
         "TARGET_OS": "linux",
+        "TARGET_ARCH": arch,
     }
     run("make docker.proxyv2 docker.pilot", env=build_env, cwd="istio")
 
@@ -174,7 +185,7 @@ def build_istio(version: str, build_hub: str, tags: str):
 # ---------------------------------------------------------------------------
 
 
-def verify_images(build_hub: str, tags: str):
+def verify_images(build_hub: str, tags: str) -> None:
     print("--- Verifying built images ---", flush=True)
     run(
         f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless envoy --version'
@@ -187,7 +198,9 @@ def verify_images(build_hub: str, tags: str):
     )
 
 
-def tag_and_push(build_hub: str, export_hub: str, tags: str, minor_tag: str):
+def tag_and_push(
+    build_hub: str, export_hub: str, tags: str, minor_tag: str, arch: str
+) -> None:
     # Authenticate to GHCR if applicable
     github_token = os.environ.get("GITHUB_TOKEN", "")
     if export_hub.startswith("ghcr.io/") and github_token:
@@ -198,7 +211,7 @@ def tag_and_push(build_hub: str, export_hub: str, tags: str, minor_tag: str):
     for image in IMAGES:
         src = f"{build_hub}/{image}:{tags}-distroless"
         for tag in (tags, minor_tag):
-            dest = f"{export_hub}/{image}:{tag}"
+            dest = f"{export_hub}/{image}:{tag}-{arch}"
             run(f"docker tag {src} {dest}")
             run(f"docker push {dest}")
 
@@ -218,34 +231,33 @@ def get_version_output(hub: str, image: str, tag: str, cmd: str) -> str:
     return output[0] if output else "unknown"
 
 
-def write_summary(export_hub: str, version: str, tags: str, minor_tag: str):
+def write_summary(
+    export_hub: str, version: str, tags: str, minor_tag: str, arch: str
+) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
 
-    envoy_ver = get_version_output(export_hub, "proxyv2", minor_tag, "envoy --version")
+    envoy_ver = get_version_output(
+        export_hub, "proxyv2", f"{minor_tag}-{arch}", "envoy --version"
+    )
     agent_ver = get_version_output(
-        export_hub, "proxyv2", minor_tag, "pilot-agent version"
+        export_hub, "proxyv2", f"{minor_tag}-{arch}", "pilot-agent version"
     )
     discovery_ver = get_version_output(
-        export_hub, "pilot", minor_tag, "pilot-discovery version"
+        export_hub, "pilot", f"{minor_tag}-{arch}", "pilot-discovery version"
     )
 
     with open(summary_path, "a") as f:
         f.write(
-            f"""## Istio FIPS Build Summary
+            f"""## Istio FIPS Build Summary ({arch})
 
 | | |
 |---|---|
 | **Istio Version** | {version} |
-| **Tags** | {tags}, {minor_tag} |
+| **Architecture** | {arch} |
+| **Tags** | {tags}-{arch}, {minor_tag}-{arch} |
 | **Export Registry** | {export_hub} |
-
-### Published Images
-- `{export_hub}/proxyv2:{tags}`
-- `{export_hub}/proxyv2:{minor_tag}`
-- `{export_hub}/pilot:{tags}`
-- `{export_hub}/pilot:{minor_tag}`
 
 ### Component Versions
 - **envoy:** {envoy_ver}
@@ -260,16 +272,24 @@ def write_summary(export_hub: str, version: str, tags: str, minor_tag: str):
 # ===========================================================================
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Build FIPS-compliant Istio images")
     parser.add_argument(
         "--version", dest="version", default=None, help="Istio version or 'latest'"
     )
+    parser.add_argument(
+        "--arch",
+        dest="arch",
+        default=None,
+        help="Target architecture (amd64, arm64). Defaults to host arch.",
+    )
     args = parser.parse_args()
 
-    # Resolve version
+    # Resolve version and arch
     version = resolve_version(args.version)
+    arch = args.arch or detect_arch()
     print(f"Istio version: {version}")
+    print(f"Architecture: {arch}")
 
     major_version = version.rsplit(".", 1)[0]
     tags = f"{major_version}-fips"
@@ -284,14 +304,17 @@ def main():
         {
             "ISTIO_VERSION": version,
             "GOOS": "linux",
+            "GOARCH": arch,
             "TARGET_OS": "linux",
+            "TARGET_ARCH": arch,
             "BUILD_WITH_CONTAINER": "0",
             "BAZEL_BUILD_ARGS": "--config=release --verbose_failures --sandbox_debug",
         }
     )
 
-    config = {
+    config: dict[str, str] = {
         "ISTIO_VERSION": version,
+        "ARCH": arch,
         "MAJOR_ISTIO_VERSION": major_version,
         "TAGS": tags,
         "BUILD_HUB": build_hub,
@@ -302,10 +325,10 @@ def main():
 
     start_registry()
     build_envoy(version)
-    build_istio(version, build_hub, tags)
+    build_istio(version, build_hub, tags, arch)
     verify_images(build_hub, tags)
-    tag_and_push(build_hub, export_hub, tags, minor_tag)
-    write_summary(export_hub, version, tags, minor_tag)
+    tag_and_push(build_hub, export_hub, tags, minor_tag, arch)
+    write_summary(export_hub, version, tags, minor_tag, arch)
 
     print(f"Done. Images pushed to {export_hub}")
 

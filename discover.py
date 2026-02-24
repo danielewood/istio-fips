@@ -6,7 +6,7 @@
 """Discover which supported Istio versions need FIPS builds.
 
 Checks endoflife.date for supported versions, then checks GHCR for
-existing images. Outputs a JSON matrix of versions that need building.
+existing images. Outputs a JSON list of versions that need building.
 
 Environment variables:
     GITHUB_TOKEN   - GitHub token for GHCR auth
@@ -85,9 +85,9 @@ def main() -> None:
 
     # Manual single-version override
     if input_version:
-        matrix = [{"istio_version": input_version}]
+        versions = [input_version]
         print(f"Manual version requested: {input_version}")
-        write_output("matrix", json.dumps(matrix))
+        write_output("versions", json.dumps(versions))
         write_summary(f"### Building 1 Istio version (manual)\n\n- {input_version}")
         sys.exit(0)
 
@@ -95,7 +95,7 @@ def main() -> None:
     image_path = export_hub.removeprefix("ghcr.io/")
     ghcr_token = get_ghcr_token(image_path, github_token)
 
-    matrix: list[dict[str, str]] = []
+    versions: list[str] = []
     for version in supported:
         tag = f"{version}-fips"
 
@@ -104,14 +104,14 @@ def main() -> None:
         print(f"  {export_hub}/proxyv2:{tag} ... {status}")
 
         if not exists:
-            matrix.append({"istio_version": version})
+            versions.append(version)
 
-    print(f"\nVersions to build: {json.dumps(matrix)}")
-    write_output("matrix", json.dumps(matrix))
+    print(f"\nVersions to build: {json.dumps(versions)}")
+    write_output("versions", json.dumps(versions))
 
-    if matrix:
-        lines = [f"### Building {len(matrix)} Istio version(s)", ""]
-        lines += [f"- {m['istio_version']}" for m in matrix]
+    if versions:
+        lines = [f"### Building {len(versions)} Istio version(s)", ""]
+        lines += [f"- {v}" for v in versions]
         write_summary("\n".join(lines))
     else:
         write_summary("### All supported Istio versions are already built")
