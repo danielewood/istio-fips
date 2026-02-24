@@ -19,6 +19,11 @@ on:
           - all
           - amd64
           - arm64
+      retry:
+        description: 'Retry attempt (set automatically on re-trigger)'
+        required: false
+        default: '0'
+        type: number
   # push:
   #   branches:
   #     - master
@@ -55,9 +60,10 @@ jobs:
     needs: discover
     if: needs.discover.outputs.versions != '[]'
     runs-on: ${{ matrix.arch.runner }}
-    timeout-minutes: 30  # TODO: restore to 330 after cache testing
+    timeout-minutes: 330
     permissions:
       contents: read
+      actions: write
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -132,15 +138,36 @@ jobs:
           path: ~/.cache/bazel-disk
           key: bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-${{ github.run_id }}
 
-      - name: Verify Envoy binary exists
+      - name: Check build result
+        if: always()
+        id: build-check
         run: |
-          if [ ! -f proxy/bazel-bin/envoy ]; then
-            echo "::error::Envoy build did not complete. Re-run to resume from Bazel cache."
-            exit 1
+          if [ -f proxy/bazel-bin/envoy ]; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=incomplete" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Re-trigger build to resume from cache
+        if: always() && steps.build-check.outputs.result == 'incomplete' && (inputs.retry || 0) < 2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEXT_RETRY=$(( ${{ inputs.retry || 0 }} + 1 ))
+          echo "Build incomplete, re-triggering (attempt ${NEXT_RETRY}/2)..."
+          gh workflow run build.yaml \
+            -f istio_version=${{ matrix.istio_version }} \
+            -f arch=${{ matrix.arch.name }} \
+            -f retry=${NEXT_RETRY}
+
+      - name: Fail if retries exhausted
+        if: always() && steps.build-check.outputs.result == 'incomplete' && (inputs.retry || 0) >= 2
+        run: |
+          echo "::error::Envoy build did not complete after ${{ inputs.retry }} attempts."
+          exit 1
+
       - name: Upload Envoy binary
-        if: steps.envoy-build.outcome == 'success'
+        if: steps.build-check.outputs.result == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
