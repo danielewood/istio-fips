@@ -1,0 +1,98 @@
+---
+name: Istio Build Workflow
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6am UTC
+  workflow_dispatch:
+    inputs:
+      istio_version:
+        description: 'Single Istio version to build (e.g., 1.26.2), or leave empty to build all supported versions'
+        required: false
+        default: ''
+        type: string
+  push:
+    branches:
+      - master
+      - main
+      - 'releases/*'
+
+jobs:
+  discover:
+    name: Discover versions to build
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Resolve versions to build
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPORT_HUB: ghcr.io/${{ github.repository }}
+          INPUT_VERSION: ${{ inputs.istio_version }}
+        run: uv run ./discover.py
+
+  build:
+    name: Build Istio ${{ matrix.istio_version }}
+    needs: discover
+    if: needs.discover.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          check-latest: true
+
+      - name: Install Chainguard Apko
+        run: |
+          go install chainguard.dev/apko@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Install Deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc++-18-dev \
+            libc++abi-18-dev \
+            libstdc++-12-dev
+          # LLVM toolchain needs libtinfo5 which isn't in noble repos - grab from jammy
+          curl -sLO http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          sudo dpkg -i libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          rm libtinfo5_6.3-2ubuntu0.1_amd64.deb
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.istio_version }}
+          repository-cache: true
+
+      - name: Build and push images
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPORT_HUB: ghcr.io/${{ github.repository }}
+        run: uv run ./build.py --version ${{ matrix.istio_version }}
