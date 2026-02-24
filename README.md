@@ -12,22 +12,33 @@ Images are distroless (Wolfi-based) and published to `ghcr.io/danielewood/istio-
 ## How it works
 
 1. `discover.py` checks [endoflife.date](https://endoflife.date/istio) for supported Istio versions, then checks GHCR to skip versions that already have images
-2. `build.py` clones the Istio proxy and control plane repos for a given version, patches them for FIPS, builds everything, and pushes the images
+2. `build.py` clones the Istio proxy and control plane repos for a given version, patches them for FIPS, and builds everything in two stages:
+   - **envoy** — compiles the Envoy proxy with `boringssl=fips` via Bazel (the slow part, ~2-5 hours)
+   - **istio** — builds Go control-plane binaries with `GOEXPERIMENT=boringcrypto`, assembles distroless images, and pushes to GHCR
 
-## Automated builds
+## CI workflow
 
-A GitHub Actions workflow (`.github/workflows/build.yaml`) runs daily and on push to `main`/`master`. It builds all supported Istio versions that don't already have images in the registry.
+The GitHub Actions workflow (`.github/workflows/build.yaml`) splits envoy and istio into separate jobs. Manual dispatch supports filtering by version and architecture.
 
-Manual builds can target a specific version via workflow dispatch.
+The envoy build uses Bazel disk caching (`bazel-contrib/setup-bazel`) so that timed-out builds save progress and resume on re-trigger.
 
 ## Local usage
 
 ```sh
-# Build a specific version
+# Build a specific version (both stages)
 uv run ./build.py --version 1.29.0
+
+# Build just envoy (useful for iteration)
+uv run ./build.py --version 1.29.0 --stage envoy
+
+# Build just istio images (expects envoy binary at proxy/bazel-bin/envoy)
+uv run ./build.py --version 1.29.0 --stage istio
 
 # Build the latest release
 uv run ./build.py --version latest
+
+# Target a specific architecture
+uv run ./build.py --version 1.29.0 --arch arm64
 
 # Push to a custom registry
 EXPORT_HUB=myregistry.example.com/istio uv run ./build.py --version 1.29.0
