@@ -10,11 +10,11 @@ on:
         required: false
         default: ''
         type: string
-  push:
-    branches:
-      - master
-      - main
-      - 'releases/*'
+  # push:
+  #   branches:
+  #     - master
+  #     - main
+  #     - 'releases/*'
 
 jobs:
   discover:
@@ -46,6 +46,7 @@ jobs:
     needs: discover
     if: needs.discover.outputs.versions != '[]'
     runs-on: ${{ matrix.arch.runner }}
+    timeout-minutes: 330
     permissions:
       contents: read
     strategy:
@@ -105,9 +106,19 @@ jobs:
           repository-cache: true
 
       - name: Build Envoy with FIPS BoringSSL
+        id: envoy-build
+        continue-on-error: true
         run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage envoy
 
+      - name: Verify Envoy binary exists
+        run: |
+          if [ ! -f proxy/bazel-bin/envoy ]; then
+            echo "::error::Envoy build did not complete. Re-run to resume from Bazel cache."
+            exit 1
+          fi
+
       - name: Upload Envoy binary
+        if: steps.envoy-build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
