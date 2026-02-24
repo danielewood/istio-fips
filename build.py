@@ -274,6 +274,8 @@ def write_summary(
 # Main
 # ===========================================================================
 
+STAGES = ("envoy", "istio", "all")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build FIPS-compliant Istio images")
@@ -286,13 +288,23 @@ def main() -> None:
         default=None,
         help="Target architecture (amd64, arm64). Defaults to host arch.",
     )
+    parser.add_argument(
+        "--stage",
+        dest="stage",
+        default="all",
+        choices=STAGES,
+        help="Build stage: 'envoy' (compile proxy only), 'istio' (images only, "
+        "expects envoy binary at proxy/bazel-bin/envoy), 'all' (default).",
+    )
     args = parser.parse_args()
 
     # Resolve version and arch
     version = resolve_version(args.version)
     arch = args.arch or detect_arch()
+    stage = args.stage
     print(f"Istio version: {version}")
     print(f"Architecture: {arch}")
+    print(f"Stage: {stage}")
 
     major_version = version.rsplit(".", 1)[0]
     tags = f"{major_version}-fips"
@@ -318,6 +330,7 @@ def main() -> None:
     config: dict[str, str] = {
         "ISTIO_VERSION": version,
         "ARCH": arch,
+        "STAGE": stage,
         "MAJOR_ISTIO_VERSION": major_version,
         "TAGS": tags,
         "BUILD_HUB": build_hub,
@@ -326,8 +339,23 @@ def main() -> None:
     for k, v in config.items():
         print(f"  {k}={v}")
 
+    # Stage: envoy — just compile the proxy, no docker needed
+    if stage in ("envoy", "all"):
+        build_envoy(version)
+
+    if stage == "envoy":
+        print("Envoy binary ready at proxy/bazel-bin/envoy")
+        return
+
+    # Stage: istio — needs envoy binary, builds and pushes images
+    envoy_bin = Path("proxy/bazel-bin/envoy")
+    if not envoy_bin.exists():
+        sys.exit(
+            f"Error: {envoy_bin} not found. "
+            "Run with --stage envoy first, or use --stage all."
+        )
+
     start_registry()
-    build_envoy(version)
     build_istio(version, build_hub, tags, arch)
     verify_images(build_hub, tags)
     tag_and_push(build_hub, export_hub, tags, minor_tag, arch)

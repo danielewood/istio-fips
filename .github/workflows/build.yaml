@@ -41,10 +41,82 @@ jobs:
           INPUT_VERSION: ${{ inputs.istio_version }}
         run: uv run ./discover.py
 
-  build:
-    name: Build Istio ${{ matrix.istio_version }} (${{ matrix.arch.name }})
+  build-envoy:
+    name: Build Envoy ${{ matrix.istio_version }} (${{ matrix.arch.name }})
     needs: discover
     if: needs.discover.outputs.versions != '[]'
+    runs-on: ${{ matrix.arch.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        istio_version: ${{ fromJson(needs.discover.outputs.versions) }}
+        arch:
+          - name: amd64
+            runner: ubuntu-24.04
+          - name: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Install Deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc++-18-dev \
+            libc++abi-18-dev \
+            libstdc++-12-dev
+          # LLVM toolchain needs libtinfo5 which isn't in noble repos
+          ARCH=$(dpkg --print-architecture)
+          if [ "$ARCH" = "arm64" ]; then
+            DEB="libtinfo5_6.3-2_arm64.deb"
+            curl -sfLO "http://ports.ubuntu.com/pool/universe/n/ncurses/${DEB}"
+          else
+            DEB="libtinfo5_6.3-2ubuntu0.1_amd64.deb"
+            curl -sfLO "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/${DEB}"
+          fi
+          sudo dpkg -i "${DEB}"
+          rm "${DEB}"
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.18.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ matrix.istio_version }}-${{ matrix.arch.name }}
+          repository-cache: true
+
+      - name: Build Envoy with FIPS BoringSSL
+        run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage envoy
+
+      - name: Upload Envoy binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
+          path: proxy/bazel-bin/envoy
+          retention-days: 1
+
+  build-istio:
+    name: Build Istio ${{ matrix.istio_version }} (${{ matrix.arch.name }})
+    needs: [discover, build-envoy]
     runs-on: ${{ matrix.arch.runner }}
     permissions:
       id-token: write
@@ -92,41 +164,24 @@ jobs:
           go install chainguard.dev/apko@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
-      - name: Install Deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libc++-18-dev \
-            libc++abi-18-dev \
-            libstdc++-12-dev
-          # LLVM toolchain needs libtinfo5 which isn't in noble repos
-          ARCH=$(dpkg --print-architecture)
-          if [ "$ARCH" = "arm64" ]; then
-            DEB="libtinfo5_6.3-2_arm64.deb"
-            curl -sfLO "http://ports.ubuntu.com/pool/universe/n/ncurses/${DEB}"
-          else
-            DEB="libtinfo5_6.3-2ubuntu0.1_amd64.deb"
-            curl -sfLO "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/${DEB}"
-          fi
-          sudo dpkg -i "${DEB}"
-          rm "${DEB}"
-
-      - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.18.0
+      - name: Download Envoy binary
+        uses: actions/download-artifact@v4
         with:
-          bazelisk-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.istio_version }}-${{ matrix.arch.name }}
-          repository-cache: true
+          name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
+          path: proxy/bazel-bin
+
+      - name: Make Envoy executable
+        run: chmod +x proxy/bazel-bin/envoy
 
       - name: Build and push images
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXPORT_HUB: ghcr.io/${{ github.repository }}
-        run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }}
+        run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage istio
 
   manifest:
     name: Create manifest for Istio ${{ matrix.istio_version }}
-    needs: [discover, build]
+    needs: [discover, build-istio]
     runs-on: ubuntu-latest
     permissions:
       packages: write
