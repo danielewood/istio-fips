@@ -115,7 +115,7 @@ jobs:
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.istio_version }}-${{ matrix.arch.name }}
-          repository-cache: true
+          repository-cache: false
 
       - name: Build Envoy with FIPS BoringSSL
         id: envoy-build
