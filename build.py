@@ -252,8 +252,7 @@ def write_summary(
     )
 
     with open(summary_path, "a") as f:
-        f.write(
-            f"""## Istio FIPS Build Summary ({arch})
+        f.write(f"""## Istio FIPS Build Summary ({arch})
 
 | | |
 |---|---|
@@ -266,8 +265,7 @@ def write_summary(
 - **envoy:** {envoy_ver}
 - **pilot-agent:** {agent_ver}
 - **pilot-discovery:** {discovery_ver}
-"""
-        )
+""")
 
 
 # ===========================================================================
