@@ -53,14 +53,18 @@ jobs:
       packages: write
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 8
       matrix:
         include: ${{ fromJson(needs.discover.outputs.matrix) }}
     steps:
       - name: Free up disk space
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /usr/local/share/boost
           sudo docker image prune --all --force
           df -h /
 
