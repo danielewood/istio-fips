@@ -10,7 +10,6 @@ import atexit
 import json
 import os
 import platform
-import re
 import subprocess
 import sys
 import time
@@ -155,19 +154,11 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
             )
         )
 
-    # Envoy with BoringSSL needs libstdc++ in the iptables image
-    iptables_yaml = istio_dir / "docker/iptables.yaml"
-    content = iptables_yaml.read_text()
-    if "libstdc++" not in content:
-        iptables_yaml.write_text(
-            re.sub(r"(- libgcc\n)", r"\1    - libstdc++\n", content)
-        )
-
-    # Build base images with apko
+    # Build base images with apko (using our own configs with libstdc++ and PATH)
     go_bin = Path.home() / "go/bin"
     env = {**os.environ, "PATH": f"{go_bin}:{os.environ['PATH']}"}
     run(
-        f"apko publish --arch={arch} docker/iptables.yaml {build_hub}/iptables:{tags}",
+        f"apko publish --arch={arch} {SCRIPT_DIR}/iptables.yaml {build_hub}/iptables:{tags}",
         env=env,
         cwd="istio",
     )
