@@ -140,8 +140,9 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
     release_dir.mkdir(parents=True, exist_ok=True)
 
     envoy_src = Path("proxy/bazel-bin/envoy")
-    (release_dir / f"envoy-{proxy_sha}").write_bytes(envoy_src.read_bytes())
-    (release_dir / "envoy").write_bytes(envoy_src.read_bytes())
+    for dest in (release_dir / f"envoy-{proxy_sha}", release_dir / "envoy"):
+        dest.write_bytes(envoy_src.read_bytes())
+        dest.chmod(0o755)
 
     # Enable BoringCrypto for Go binaries
     # https://github.com/tetratelabs/istio/blob/tetrate-workflow/tetrateci/docs/fips.md
