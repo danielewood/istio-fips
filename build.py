@@ -198,13 +198,16 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
 def verify_images(build_hub: str, tags: str) -> None:
     print("--- Verifying built images ---", flush=True)
     run(
-        f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless envoy --version'
+        f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless envoy --version',
+        check=False,
     )
     run(
-        f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless pilot-agent version'
+        f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless pilot-agent version',
+        check=False,
     )
     run(
-        f'docker run --rm --entrypoint="" {build_hub}/pilot:{tags}-distroless pilot-discovery version'
+        f'docker run --rm --entrypoint="" {build_hub}/pilot:{tags}-distroless pilot-discovery version',
+        check=False,
     )
 
 
@@ -362,8 +365,8 @@ def main() -> None:
 
     start_registry()
     build_istio(version, build_hub, tags, arch)
-    verify_images(build_hub, tags)
     tag_and_push(build_hub, export_hub, tags, minor_tag, arch)
+    verify_images(build_hub, tags)
     write_summary(export_hub, version, tags, minor_tag, arch)
 
     print(f"Done. Images pushed to {export_hub}")
