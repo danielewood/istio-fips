@@ -101,6 +101,7 @@ def start_registry() -> None:
 
 
 def build_envoy(version: str) -> None:
+    print("\n=== Building Envoy with FIPS BoringSSL ===\n", flush=True)
     run(
         f"git clone https://github.com/istio/proxy.git --depth 1 --branch {version} --single-branch"
     )
@@ -120,6 +121,7 @@ def build_envoy(version: str) -> None:
 
 
 def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
+    print("\n=== Building Istio images ===\n", flush=True)
     run(
         f"git clone https://github.com/istio/istio.git --depth 1 --branch {version} --single-branch"
     )
@@ -155,7 +157,7 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
             )
         )
 
-    # Build base images with apko (using our own configs with libstdc++ and PATH)
+    # Build base images with apko (using our own configs with wolfi-baselayout and PATH)
     go_bin = Path.home() / "go/bin"
     env = {**os.environ, "PATH": f"{go_bin}:{os.environ['PATH']}"}
     run(
@@ -198,24 +200,22 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
 
 
 def verify_images(build_hub: str, tags: str) -> None:
-    print("--- Verifying built images ---", flush=True)
+    print("\n=== Verifying built images ===\n", flush=True)
     run(
         f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless envoy --version',
-        check=False,
     )
     run(
         f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless pilot-agent version',
-        check=False,
     )
     run(
         f'docker run --rm --entrypoint="" {build_hub}/pilot:{tags}-distroless pilot-discovery version',
-        check=False,
     )
 
 
 def tag_and_push(
     build_hub: str, export_hub: str, tags: str, minor_tag: str, arch: str
 ) -> None:
+    print("\n=== Tagging and pushing images ===\n", flush=True)
     # Authenticate to GHCR if applicable
     github_token = os.environ.get("GITHUB_TOKEN", "")
     if export_hub.startswith("ghcr.io/") and github_token:
@@ -337,6 +337,7 @@ def main() -> None:
         }
     )
 
+    print("\n=== Build configuration ===\n", flush=True)
     config: dict[str, str] = {
         "ISTIO_VERSION": version,
         "ARCH": arch,
