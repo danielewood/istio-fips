@@ -10,6 +10,7 @@ import atexit
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import time
@@ -104,7 +105,8 @@ def start_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_envoy(version: str) -> None:
+def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
+    """Build Envoy. Returns True if binary was produced, False if timed out."""
     print("\n=== Building Envoy with FIPS BoringSSL ===\n")
     run(
         f"git clone https://github.com/istio/proxy.git --depth 1 --branch {version} --single-branch"
@@ -116,7 +118,31 @@ def build_envoy(version: str) -> None:
     if disk_cache:
         bazelrc_lines.append(f"build --disk_cache={disk_cache}")
     Path("proxy/user.bazelrc").write_text("\n".join(bazelrc_lines) + "\n")
-    run("make build_envoy", cwd="proxy")
+
+    if timeout_minutes is None:
+        run("make build_envoy", cwd="proxy")
+        return True
+
+    # Run with timeout — gracefully kill Bazel so disk cache is saved
+    cmd = "make build_envoy"
+    print(f"+ {cmd}  (timeout: {timeout_minutes}m)")
+    proc = subprocess.Popen(cmd, shell=True, cwd="proxy", start_new_session=True)
+    try:
+        proc.wait(timeout=timeout_minutes * 60)
+        if proc.returncode != 0:
+            sys.exit(f"Build failed with exit code {proc.returncode}")
+        return True
+    except subprocess.TimeoutExpired:
+        print(f"\n=== Build timeout reached ({timeout_minutes}m) ===")
+        print("Sending SIGTERM to let Bazel save cache...")
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            print("Sending SIGKILL...")
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +336,13 @@ def main() -> None:
         help="Build stage: 'envoy' (compile proxy only), 'istio' (images only, "
         "expects envoy binary at proxy/bazel-bin/envoy), 'all' (default).",
     )
+    parser.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=int,
+        default=None,
+        help="Envoy build timeout in minutes. Exits gracefully to save cache.",
+    )
     args = parser.parse_args()
 
     # Resolve version and arch
@@ -356,7 +389,10 @@ def main() -> None:
 
     # Stage: envoy — just compile the proxy, no docker needed
     if stage in ("envoy", "all"):
-        build_envoy(version)
+        completed = build_envoy(version, timeout_minutes=args.timeout)
+        if not completed:
+            print("Build will resume from cache on next run.")
+            return
 
     if stage == "envoy":
         print("Envoy binary ready at proxy/bazel-bin/envoy")

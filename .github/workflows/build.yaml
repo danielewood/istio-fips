@@ -19,11 +19,6 @@ on:
           - all
           - amd64
           - arm64
-      retry:
-        description: 'Retry attempt (set automatically on re-trigger)'
-        required: false
-        default: '0'
-        type: number
   # push:
   #   branches:
   #     - master
@@ -55,15 +50,14 @@ jobs:
           INPUT_VERSION: ${{ inputs.istio_version }}
         run: uv run ./discover.py
 
-  build-envoy:
-    name: Build Envoy ${{ matrix.istio_version }} (${{ matrix.arch.name }})
+  build-envoy-1:
+    name: 'Build Envoy ${{ matrix.istio_version }} (${{ matrix.arch.name }}) [pass 1]'
     needs: discover
     if: needs.discover.outputs.versions != '[]'
     runs-on: ${{ matrix.arch.runner }}
     timeout-minutes: 330
     permissions:
       contents: read
-      actions: write
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -87,20 +81,10 @@ jobs:
             --jq '[.artifacts[] | select(.expired == false)] | first | .workflow_run.id // empty')
           if [ -n "$ARTIFACT_RUN" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "run_id=$ARTIFACT_RUN" >> "$GITHUB_OUTPUT"
             echo "Found existing artifact from run $ARTIFACT_RUN, skipping build."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Download existing Envoy artifact
-        if: steps.artifact-check.outputs.exists == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
-          path: proxy/bazel-bin
-          run-id: ${{ steps.artifact-check.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Free up disk space
         if: steps.artifact-check.outputs.exists != 'true'
@@ -155,11 +139,9 @@ jobs:
 
       - name: Build Envoy with FIPS BoringSSL
         if: steps.artifact-check.outputs.exists != 'true'
-        id: envoy-build
-        continue-on-error: true
         env:
           BAZEL_DISK_CACHE: ~/.cache/bazel-disk
-        run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage envoy
+        run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage envoy --timeout 300
 
       - name: Save Bazel disk cache
         if: always() && steps.artifact-check.outputs.exists != 'true'
@@ -168,45 +150,134 @@ jobs:
           path: ~/.cache/bazel-disk
           key: bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-${{ github.run_id }}
 
-      - name: Check build result
-        if: always() && steps.artifact-check.outputs.exists != 'true'
-        id: build-check
-        run: |
-          if [ -f proxy/bazel-bin/envoy ]; then
-            echo "result=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "result=incomplete" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Upload Envoy binary
+        if: steps.artifact-check.outputs.exists != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
+          path: proxy/bazel-bin/envoy
+          if-no-files-found: ignore
+          retention-days: 1
 
-      - name: Re-trigger build to resume from cache
-        if: always() && steps.build-check.outputs.result == 'incomplete' && (inputs.retry || 0) < 2
+  build-envoy-2:
+    name: 'Build Envoy ${{ matrix.istio_version }} (${{ matrix.arch.name }}) [pass 2]'
+    needs: [discover, build-envoy-1]
+    if: needs.discover.outputs.versions != '[]'
+    runs-on: ${{ matrix.arch.runner }}
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        istio_version: ${{ fromJson(needs.discover.outputs.versions) }}
+        arch:
+          - name: amd64
+            runner: ubuntu-24.04
+          - name: arm64
+            runner: ubuntu-24.04-arm
+        exclude:
+          - arch:
+              name: ${{ inputs.arch == 'arm64' && 'amd64' || inputs.arch == 'amd64' && 'arm64' || 'none' }}
+    steps:
+      - name: Check for existing Envoy artifact
+        id: artifact-check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          NEXT_RETRY=$(( ${{ inputs.retry || 0 }} + 1 ))
-          echo "Build incomplete, re-triggering (attempt ${NEXT_RETRY}/2)..."
-          gh workflow run build.yaml \
-            -f istio_version=${{ matrix.istio_version }} \
-            -f arch=${{ matrix.arch.name }} \
-            -f retry=${NEXT_RETRY}
+          ARTIFACT_RUN=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}" \
+            --jq '[.artifacts[] | select(.expired == false)] | first | .workflow_run.id // empty')
+          if [ -n "$ARTIFACT_RUN" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Found existing artifact from run $ARTIFACT_RUN, skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Fail if retries exhausted
-        if: always() && steps.build-check.outputs.result == 'incomplete' && (inputs.retry || 0) >= 2
+      - name: Free up disk space
+        if: steps.artifact-check.outputs.exists != 'true'
         run: |
-          echo "::error::Envoy build did not complete after ${{ inputs.retry }} attempts."
-          exit 1
+          sudo rm -rf \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /usr/local/share/boost
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Checkout Repository
+        if: steps.artifact-check.outputs.exists != 'true'
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        if: steps.artifact-check.outputs.exists != 'true'
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Install Deps
+        if: steps.artifact-check.outputs.exists != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc++-18-dev \
+            libc++abi-18-dev \
+            libstdc++-12-dev
+          # LLVM toolchain needs libtinfo5 which isn't in noble repos
+          ARCH=$(dpkg --print-architecture)
+          if [ "$ARCH" = "arm64" ]; then
+            DEB="libtinfo5_6.3-2_arm64.deb"
+            curl -sfLO "http://ports.ubuntu.com/pool/universe/n/ncurses/${DEB}"
+          else
+            DEB="libtinfo5_6.3-2ubuntu0.1_amd64.deb"
+            curl -sfLO "http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/${DEB}"
+          fi
+          sudo dpkg -i "${DEB}"
+          rm "${DEB}"
+
+      - name: Restore Bazel disk cache
+        if: steps.artifact-check.outputs.exists != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-${{ github.run_id }}
+          restore-keys: |
+            bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-
+
+      - name: Build Envoy with FIPS BoringSSL
+        if: steps.artifact-check.outputs.exists != 'true'
+        env:
+          BAZEL_DISK_CACHE: ~/.cache/bazel-disk
+        run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage envoy --timeout 300
+
+      - name: Save Bazel disk cache
+        if: always() && steps.artifact-check.outputs.exists != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-pass2-${{ github.run_id }}
 
       - name: Upload Envoy binary
-        if: steps.build-check.outputs.result == 'success'
+        if: steps.artifact-check.outputs.exists != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
           path: proxy/bazel-bin/envoy
           retention-days: 1
 
+      - name: Verify Envoy binary exists
+        if: steps.artifact-check.outputs.exists != 'true'
+        run: |
+          if [ ! -f proxy/bazel-bin/envoy ]; then
+            echo "::error::Envoy build did not complete after 2 passes."
+            exit 1
+          fi
+
   build-istio:
     name: Build Istio ${{ matrix.istio_version }} (${{ matrix.arch.name }})
-    needs: [discover, build-envoy]
+    needs: [discover, build-envoy-2]
     runs-on: ${{ matrix.arch.runner }}
     permissions:
       id-token: write
