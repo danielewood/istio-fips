@@ -1,8 +1,8 @@
 ---
 name: Istio Build Workflow
 on:
-  # schedule:
-  #   - cron: '0 6 * * *'  # Daily at 6am UTC
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6am UTC
   workflow_dispatch:
     inputs:
       istio_version:
