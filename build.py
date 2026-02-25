@@ -183,6 +183,7 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
     # command-line variables are available, defaulting to uname -m (host arch).
     build_env = {
         **env,
+        "TAG": tags,
         "BASE_VERSION": tags,
         "ISTIO_BASE_REGISTRY": build_hub,
         "HUB": build_hub,
