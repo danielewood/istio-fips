@@ -14,8 +14,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+# Flush every print immediately so CI logs appear in real time
+sys.stdout.reconfigure(line_buffering=True)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 IMAGES = ["proxyv2", "pilot"]
@@ -40,9 +44,9 @@ def run(
 ) -> subprocess.CompletedProcess[str]:
     """Run a shell command, printing it first."""
     if isinstance(cmd, str):
-        print(f"+ {cmd}", flush=True)
+        print(f"+ {cmd}")
     else:
-        print(f"+ {' '.join(cmd)}", flush=True)
+        print(f"+ {' '.join(cmd)}")
     return subprocess.run(
         cmd,
         shell=isinstance(cmd, str),
@@ -101,7 +105,7 @@ def start_registry() -> None:
 
 
 def build_envoy(version: str) -> None:
-    print("\n=== Building Envoy with FIPS BoringSSL ===\n", flush=True)
+    print("\n=== Building Envoy with FIPS BoringSSL ===\n")
     run(
         f"git clone https://github.com/istio/proxy.git --depth 1 --branch {version} --single-branch"
     )
@@ -121,7 +125,7 @@ def build_envoy(version: str) -> None:
 
 
 def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
-    print("\n=== Building Istio images ===\n", flush=True)
+    print("\n=== Building Istio images ===\n")
     run(
         f"git clone https://github.com/istio/istio.git --depth 1 --branch {version} --single-branch"
     )
@@ -200,7 +204,7 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
 
 
 def verify_images(build_hub: str, tags: str) -> None:
-    print("\n=== Verifying built images ===\n", flush=True)
+    print("\n=== Verifying built images ===\n")
     run(
         f'docker run --rm --entrypoint="" {build_hub}/proxyv2:{tags}-distroless envoy --version',
     )
@@ -215,11 +219,11 @@ def verify_images(build_hub: str, tags: str) -> None:
 def tag_and_push(
     build_hub: str, export_hub: str, tags: str, minor_tag: str, arch: str
 ) -> None:
-    print("\n=== Tagging and pushing images ===\n", flush=True)
+    print("\n=== Tagging and pushing images ===\n")
     # Authenticate to GHCR if applicable
     github_token = os.environ.get("GITHUB_TOKEN", "")
     if export_hub.startswith("ghcr.io/") and github_token:
-        print("Authenticating with GitHub Container Registry...", flush=True)
+        print("Authenticating with GitHub Container Registry...")
         actor = os.environ.get("GITHUB_ACTOR", os.environ.get("USER", ""))
         run(f"echo $GITHUB_TOKEN | docker login ghcr.io -u {actor} --password-stdin")
 
@@ -337,7 +341,7 @@ def main() -> None:
         }
     )
 
-    print("\n=== Build configuration ===\n", flush=True)
+    print("\n=== Build configuration ===\n")
     config: dict[str, str] = {
         "ISTIO_VERSION": version,
         "ARCH": arch,
