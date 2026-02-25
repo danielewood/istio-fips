@@ -78,7 +78,32 @@ jobs:
           - arch:
               name: ${{ inputs.arch == 'arm64' && 'amd64' || inputs.arch == 'amd64' && 'arm64' || 'none' }}
     steps:
+      - name: Check for existing Envoy artifact
+        id: artifact-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARTIFACT_RUN=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}" \
+            --jq '[.artifacts[] | select(.expired == false)] | first | .workflow_run.id // empty')
+          if [ -n "$ARTIFACT_RUN" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "run_id=$ARTIFACT_RUN" >> "$GITHUB_OUTPUT"
+            echo "Found existing artifact from run $ARTIFACT_RUN, skipping build."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download existing Envoy artifact
+        if: steps.artifact-check.outputs.exists == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
+          path: proxy/bazel-bin
+          run-id: ${{ steps.artifact-check.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Free up disk space
+        if: steps.artifact-check.outputs.exists != 'true'
         run: |
           sudo rm -rf \
             /opt/ghc \
@@ -90,14 +115,17 @@ jobs:
           df -h /
 
       - name: Checkout Repository
+        if: steps.artifact-check.outputs.exists != 'true'
         uses: actions/checkout@v6
 
       - name: Install uv
+        if: steps.artifact-check.outputs.exists != 'true'
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: false
 
       - name: Install Deps
+        if: steps.artifact-check.outputs.exists != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -117,6 +145,7 @@ jobs:
           rm "${DEB}"
 
       - name: Restore Bazel disk cache
+        if: steps.artifact-check.outputs.exists != 'true'
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/bazel-disk
@@ -125,6 +154,7 @@ jobs:
             bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-
 
       - name: Build Envoy with FIPS BoringSSL
+        if: steps.artifact-check.outputs.exists != 'true'
         id: envoy-build
         continue-on-error: true
         env:
@@ -132,7 +162,7 @@ jobs:
         run: uv run ./build.py --version ${{ matrix.istio_version }} --arch ${{ matrix.arch.name }} --stage envoy
 
       - name: Save Bazel disk cache
-        if: always()
+        if: always() && steps.artifact-check.outputs.exists != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/bazel-disk
