@@ -112,6 +112,26 @@ def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
         f"git clone https://github.com/istio/proxy.git --depth 1 --branch {version} --single-branch"
     )
 
+    # Mark envoy build as clean — SOURCE_VERSION makes the workspace status
+    # script report "Distribution" instead of reading git status.
+    Path("proxy/SOURCE_VERSION").write_text(version)
+
+    # Strip -dev from envoy's VERSION.txt. Bazel fetches envoy source via
+    # http_archive in WORKSPACE; adding patch_cmds tells it to fix the version
+    # after downloading. This changes the proxy repo's WORKSPACE (not envoy's).
+    workspace = Path("proxy/WORKSPACE")
+    ws_content = workspace.read_text()
+    if "patch_cmds" not in ws_content:
+        workspace.write_text(
+            ws_content.replace(
+                'url = "https://github.com/" + ENVOY_ORG + "/" + ENVOY_REPO'
+                ' + "/archive/" + ENVOY_SHA + ".tar.gz",',
+                'url = "https://github.com/" + ENVOY_ORG + "/" + ENVOY_REPO'
+                ' + "/archive/" + ENVOY_SHA + ".tar.gz",\n'
+                '    patch_cmds = ["sed -i s/-dev// VERSION.txt"],',
+            )
+        )
+
     # https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/security/ssl#fips-140-2
     bazelrc_lines = ["build --define boringssl=fips"]
     disk_cache = os.environ.get("BAZEL_DISK_CACHE")
@@ -208,6 +228,7 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
     build_env = {
         **env,
         "VERSION": version,
+        "IGNORE_DIRTY_TREE": "1",
         "TAG": tags,
         "BASE_VERSION": tags,
         "ISTIO_BASE_REGISTRY": build_hub,
