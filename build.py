@@ -125,13 +125,19 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
         f"git clone https://github.com/istio/istio.git --depth 1 --branch {version} --single-branch"
     )
 
-    istio_dir = Path("istio")
+    istio_dir = Path("istio").resolve()
+
+    # Compute output dirs matching what setup_env.sh would produce for this arch.
+    # We must use absolute paths since these are passed as Make command-line overrides
+    # to work around setup_env.sh running via $(shell) before Make vars are available.
+    target_out = istio_dir / f"out/linux_{arch}"
+    target_out_linux = target_out
 
     # Place pre-built envoy so the Istio build doesn't download from GCS
     deps = json.loads((istio_dir / "istio.deps").read_text())
     proxy_sha = next(d["lastStableSHA"] for d in deps if d["name"] == "PROXY_REPO_SHA")
 
-    release_dir = istio_dir / f"out/linux_{arch}/release"
+    release_dir = target_out / "release"
     release_dir.mkdir(parents=True, exist_ok=True)
 
     envoy_src = Path("proxy/bazel-bin/envoy")
@@ -172,16 +178,21 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
     )
 
     # Build pilot and proxyv2
-    # Pass arch as Make command-line args to override Makefile-internal assignments
+    # Pass TARGET_OUT and TARGET_OUT_LINUX as Make command-line overrides because
+    # Istio's Makefile computes them via $(shell setup_env.sh) which runs before
+    # command-line variables are available, defaulting to uname -m (host arch).
     build_env = {
         **env,
         "BASE_VERSION": tags,
         "ISTIO_BASE_REGISTRY": build_hub,
         "HUB": build_hub,
         "DOCKER_BUILD_VARIANTS": "distroless",
+        "DOCKER_ARCHITECTURES": f"linux/{arch}",
     }
     run(
-        f"make TARGET_OS=linux TARGET_ARCH={arch} GOARCH={arch} docker.proxyv2 docker.pilot",
+        f"make TARGET_OS=linux TARGET_ARCH={arch} GOARCH={arch}"
+        f" TARGET_OUT={target_out} TARGET_OUT_LINUX={target_out_linux}"
+        f" docker.proxyv2 docker.pilot",
         env=build_env,
         cwd="istio",
     )
