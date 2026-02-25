@@ -169,7 +169,7 @@ jobs:
           key: bazel-disk-${{ matrix.istio_version }}-${{ matrix.arch.name }}-${{ github.run_id }}
 
       - name: Check build result
-        if: always()
+        if: always() && steps.artifact-check.outputs.exists != 'true'
         id: build-check
         run: |
           if [ -f proxy/bazel-bin/envoy ]; then
@@ -257,11 +257,22 @@ jobs:
           go install chainguard.dev/apko@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
 
+      - name: Find Envoy artifact
+        id: find-envoy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ARTIFACT_RUN=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}" \
+            --jq '[.artifacts[] | select(.expired == false)] | first | .workflow_run.id // empty')
+          echo "run_id=${ARTIFACT_RUN:-${{ github.run_id }}}" >> "$GITHUB_OUTPUT"
+
       - name: Download Envoy binary
         uses: actions/download-artifact@v4
         with:
           name: envoy-${{ matrix.istio_version }}-${{ matrix.arch.name }}
           path: proxy/bazel-bin
+          run-id: ${{ steps.find-envoy.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Make Envoy executable
         run: chmod +x proxy/bazel-bin/envoy
