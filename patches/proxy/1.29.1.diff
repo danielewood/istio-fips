@@ -18,7 +18,7 @@ index 0000000..328948e
 @@ -0,0 +1,15 @@
 +diff --git a/bazel/dependency_imports.bzl b/bazel/dependency_imports.bzl
 +--- a/bazel/dependency_imports.bzl
-+++ b/bazel/dependency_imports.bzl
+++++ b/bazel/dependency_imports.bzl
 +@@ -153,6 +153,11 @@ def envoy_dependency_imports():
 +     )
 +     go_repository(
