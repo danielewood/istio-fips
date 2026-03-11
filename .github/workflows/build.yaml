@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       istio_version:
-        description: 'Single Istio version to build (e.g., 1.26.2), or leave empty to build all supported versions'
+        description: 'Single Istio version to build (e.g., 1.26.2), or leave empty to auto-build up to 2 missing supported versions'
         required: false
         default: ''
         type: string

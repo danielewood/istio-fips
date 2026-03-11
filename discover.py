@@ -24,6 +24,8 @@ from datetime import date
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+MAX_AUTO_VERSIONS = 2
+
 
 def write_output(key: str, value: str) -> None:
     with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -106,12 +108,28 @@ def main() -> None:
         if not exists:
             versions.append(version)
 
+    deferred_versions: list[str] = []
+    if len(versions) > MAX_AUTO_VERSIONS:
+        deferred_versions = versions[MAX_AUTO_VERSIONS:]
+        versions = versions[:MAX_AUTO_VERSIONS]
+        print(
+            f"\nLimiting this run to {MAX_AUTO_VERSIONS} Istio versions. "
+            f"Deferred: {json.dumps(deferred_versions)}"
+        )
+
     print(f"\nVersions to build: {json.dumps(versions)}")
     write_output("versions", json.dumps(versions))
 
     if versions:
         lines = [f"### Building {len(versions)} Istio version(s)", ""]
         lines += [f"- {v}" for v in versions]
+        if deferred_versions:
+            lines += [
+                "",
+                f"### Deferred until a later run ({len(deferred_versions)})",
+                "",
+            ]
+            lines += [f"- {v}" for v in deferred_versions]
         write_summary("\n".join(lines))
     else:
         write_summary("### All supported Istio versions are already built")

@@ -24,6 +24,7 @@ sys.stdout.reconfigure(line_buffering=True)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 IMAGES = ["proxyv2", "pilot"]
+PATCH_SUFFIXES = (".diff", ".patch")
 
 
 def detect_arch() -> str:
@@ -57,6 +58,42 @@ def run(
         text=True,
         cwd=cwd,
     )
+
+
+def find_version_patches(repo_name: str, version: str) -> list[Path]:
+    repo_patch_dir = SCRIPT_DIR / "patches" / repo_name
+    patch_files: list[Path] = []
+    for suffix in PATCH_SUFFIXES:
+        single_file = repo_patch_dir / f"{version}{suffix}"
+        if single_file.is_file():
+            patch_files.append(single_file)
+
+    version_dir = repo_patch_dir / version
+    if version_dir.is_dir():
+        patch_files.extend(
+            sorted(
+                path
+                for path in version_dir.iterdir()
+                if path.is_file() and path.suffix in PATCH_SUFFIXES
+            )
+        )
+
+    return patch_files
+
+
+def apply_version_patches(repo_name: str, version: str, repo_dir: Path) -> None:
+    patch_files = find_version_patches(repo_name, version)
+    if not patch_files:
+        return
+
+    print(
+        f"\n=== Applying {len(patch_files)} patch(es) for {repo_name} {version} ===\n"
+    )
+    for patch_file in patch_files:
+        rel_patch = patch_file.relative_to(SCRIPT_DIR)
+        print(f"Applying {rel_patch}")
+        run(["git", "apply", "--check", str(patch_file)], cwd=repo_dir)
+        run(["git", "apply", str(patch_file)], cwd=repo_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -111,15 +148,17 @@ def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
     run(
         f"git clone https://github.com/istio/proxy.git --depth 1 --branch {version} --single-branch"
     )
+    proxy_dir = Path("proxy")
+    apply_version_patches("proxy", version, proxy_dir)
 
     # Mark envoy build as clean — SOURCE_VERSION makes the workspace status
     # script report "Distribution" instead of reading git status.
-    Path("proxy/SOURCE_VERSION").write_text(version)
+    (proxy_dir / "SOURCE_VERSION").write_text(version)
 
     # Strip -dev from envoy's VERSION.txt. Bazel fetches envoy source via
     # http_archive in WORKSPACE; adding patch_cmds tells it to fix the version
     # after downloading. This changes the proxy repo's WORKSPACE (not envoy's).
-    workspace = Path("proxy/WORKSPACE")
+    workspace = proxy_dir / "WORKSPACE"
     ws_content = workspace.read_text()
     if "patch_cmds" not in ws_content:
         workspace.write_text(
@@ -137,16 +176,16 @@ def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
     disk_cache = os.environ.get("BAZEL_DISK_CACHE")
     if disk_cache:
         bazelrc_lines.append(f"build --disk_cache={disk_cache}")
-    Path("proxy/user.bazelrc").write_text("\n".join(bazelrc_lines) + "\n")
+    (proxy_dir / "user.bazelrc").write_text("\n".join(bazelrc_lines) + "\n")
 
     if timeout_minutes is None:
-        run("make build_envoy", cwd="proxy")
+        run("make build_envoy", cwd=proxy_dir)
         return True
 
     # Run with timeout — gracefully kill Bazel so disk cache is saved
     cmd = "make build_envoy"
     print(f"+ {cmd}  (timeout: {timeout_minutes}m)")
-    proc = subprocess.Popen(cmd, shell=True, cwd="proxy", start_new_session=True)
+    proc = subprocess.Popen(cmd, shell=True, cwd=proxy_dir, start_new_session=True)
     try:
         proc.wait(timeout=timeout_minutes * 60)
         if proc.returncode != 0:
@@ -177,6 +216,7 @@ def build_istio(version: str, build_hub: str, tags: str, arch: str) -> None:
     )
 
     istio_dir = Path("istio").resolve()
+    apply_version_patches("istio", version, istio_dir)
 
     # Compute output dirs matching what setup_env.sh would produce for this arch.
     # We must use absolute paths since these are passed as Make command-line overrides

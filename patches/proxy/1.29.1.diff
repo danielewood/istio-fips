@@ -1,0 +1,33 @@
+diff --git a/WORKSPACE b/WORKSPACE
+index cd7515d..b0b8fe7 100644
+--- a/WORKSPACE
++++ b/WORKSPACE
+@@ -44,6 +44,7 @@ http_archive(
+         "//bazel:0003-network-fix-crash-in-getAddressWithPort-when-called-.patch",
+         "//bazel:0004-fix-multivalue-header-bypass-in-rbac.patch",
+         "//bazel:0005-ratelimit-fix-a-bug-where-response-phase-limit-may-r.patch",
++        "//bazel:0006-afero-strict-deps.patch",
+     ],
+     patch_args = ["-p1"],
+ )
+diff --git a/bazel/0006-afero-strict-deps.patch b/bazel/0006-afero-strict-deps.patch
+new file mode 100644
+index 0000000..328948e
+--- /dev/null
++++ b/bazel/0006-afero-strict-deps.patch
+@@ -0,0 +1,15 @@
++diff --git a/bazel/dependency_imports.bzl b/bazel/dependency_imports.bzl
++--- a/bazel/dependency_imports.bzl
++++ b/bazel/dependency_imports.bzl
++@@ -153,6 +153,11 @@ def envoy_dependency_imports():
++     )
++     go_repository(
++         name = "com_github_spf13_afero",
+++        build_directives = [
+++            "gazelle:resolve go golang.org/x/text/runes @org_golang_x_text//runes:go_default_library",
+++            "gazelle:resolve go golang.org/x/text/transform @org_golang_x_text//transform:go_default_library",
+++            "gazelle:resolve go golang.org/x/text/unicode/norm @org_golang_x_text//unicode/norm:go_default_library",
+++        ],
++         importpath = "github.com/spf13/afero",
++         sum = "h1:EaGW2JJh15aKOejeuJ+wpFSHnbd7GE6Wvp3TsNhb6LY=",
++         version = "v1.10.0",
