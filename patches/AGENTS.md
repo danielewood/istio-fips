@@ -2,6 +2,20 @@
 
 Use this directory for narrow, version-scoped fixes when an upstream Istio, proxy, Envoy, Bazel, or Go dependency issue breaks the build.
 
+## Workflow Context
+
+The CI flow now has two layers:
+
+- `.github/workflows/build.yaml` discovers versions and fans out one isolated rail per version.
+- `.github/workflows/build-version.yaml` runs the actual per-version rail:
+  - Envoy dependency `preflight`
+  - Envoy build `pass 1`
+  - Envoy build `pass 2`
+  - Istio image build
+  - Manifest creation
+
+Versions are isolated from each other. A broken version should not block another version from reaching image push and manifest creation. The two architectures are still grouped within a version rail.
+
 ## Layout
 
 `build.py` auto-applies patch files immediately after cloning a repo.
@@ -45,6 +59,8 @@ go mod download -json <module>@<version>
 curl -fsSL https://raw.githubusercontent.com/<org>/<repo>/<sha>/<path>
 ```
 
+For local Bazel validation, use the version required by the upstream checkout's `.bazelversion`. `bazelisk` is preferred when available.
+
 ## Choosing Where To Patch
 
 - Patch `patches/proxy/<version>.diff` when the break is inside `istio/proxy` or inside the Envoy archive fetched by `istio/proxy`.
@@ -77,6 +93,8 @@ Avoid:
 - broad dependency downgrades unless there is no cleaner option
 - version-agnostic hacks in `build.py`
 - unrelated cleanup in the same patch
+
+If the failure is a Go/Bazel dependency issue, prefer extending the version patch so the `preflight` stage can fail quickly before the long Envoy compile burns hours of runner time.
 
 ## Validation
 
@@ -116,6 +134,14 @@ git -C /tmp/envoy apply --check /tmp/proxy/bazel/0006-afero-strict-deps.patch
 ```bash
 python3 -m py_compile build.py
 ```
+
+1. Envoy dependency preflight:
+
+```bash
+uv run ./build.py --version 1.29.1 --stage preflight
+```
+
+This stage is meant to catch missing Envoy Go repository metadata, Gazelle resolve hints, and strict-deps errors before `pass 1` starts the long C++/Envoy build.
 
 Full builds are optional for patch authoring if they are too expensive, but apply checks are not optional.
 

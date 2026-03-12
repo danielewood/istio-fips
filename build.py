@@ -10,9 +10,12 @@ import atexit
 import json
 import os
 import platform
+import re
+import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -25,6 +28,8 @@ sys.stdout.reconfigure(line_buffering=True)
 SCRIPT_DIR = Path(__file__).resolve().parent
 IMAGES = ["proxyv2", "pilot"]
 PATCH_SUFFIXES = (".diff", ".patch")
+PREFLIGHT_BATCH_SIZE = 10
+PROXY_WORKSPACE_MARKER = ".istio-fips-proxy-version"
 
 
 def detect_arch() -> str:
@@ -96,6 +101,10 @@ def apply_version_patches(repo_name: str, version: str, repo_dir: Path) -> None:
         run(["git", "apply", str(patch_file)], cwd=repo_dir)
 
 
+def chunked(items: list[str], size: int) -> list[list[str]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
 # ---------------------------------------------------------------------------
 # Version resolution
 # ---------------------------------------------------------------------------
@@ -142,15 +151,14 @@ def start_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
-    """Build Envoy. Returns True if binary was produced, False if timed out."""
-    print("\n=== Building Envoy with FIPS BoringSSL ===\n")
+def clone_proxy_repo(version: str) -> Path:
     run(
         f"git clone https://github.com/istio/proxy.git --depth 1 --branch {version} --single-branch"
     )
-    proxy_dir = Path("proxy")
-    apply_version_patches("proxy", version, proxy_dir)
+    return Path("proxy")
 
+
+def configure_proxy_workspace(proxy_dir: Path, version: str) -> None:
     # Mark envoy build as clean — SOURCE_VERSION makes the workspace status
     # script report "Distribution" instead of reading git status.
     (proxy_dir / "SOURCE_VERSION").write_text(version)
@@ -167,7 +175,7 @@ def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
                 ' + "/archive/" + ENVOY_SHA + ".tar.gz",',
                 'url = "https://github.com/" + ENVOY_ORG + "/" + ENVOY_REPO'
                 ' + "/archive/" + ENVOY_SHA + ".tar.gz",\n'
-                '    patch_cmds = ["sed -i s/-dev// VERSION.txt"],',
+                "    patch_cmds = [\"perl -0pi -e 's/-dev//g' VERSION.txt\"],",
             )
         )
 
@@ -177,6 +185,145 @@ def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
     if disk_cache:
         bazelrc_lines.append(f"build --disk_cache={disk_cache}")
     (proxy_dir / "user.bazelrc").write_text("\n".join(bazelrc_lines) + "\n")
+
+
+def prepare_proxy_workspace(version: str) -> Path:
+    proxy_dir = Path("proxy")
+    if proxy_dir.exists():
+        marker = proxy_dir / PROXY_WORKSPACE_MARKER
+        if not marker.is_file():
+            sys.exit(
+                "Existing ./proxy directory is not managed by build.py. "
+                "Remove it or run from a clean workspace."
+            )
+        existing_version = marker.read_text().strip()
+        if existing_version != version:
+            sys.exit(
+                f"Existing ./proxy directory is prepared for {existing_version}, "
+                f"not {version}. Remove it or run from a clean workspace."
+            )
+        print(f"Reusing existing proxy workspace for {version}")
+        configure_proxy_workspace(proxy_dir, version)
+        return proxy_dir
+
+    proxy_dir = clone_proxy_repo(version)
+    apply_version_patches("proxy", version, proxy_dir)
+    (proxy_dir / PROXY_WORKSPACE_MARKER).write_text(f"{version}\n")
+    configure_proxy_workspace(proxy_dir, version)
+    return proxy_dir
+
+
+def extract_envoy_sha(workspace_text: str) -> str:
+    match = re.search(r'^ENVOY_SHA = "([^"]+)"$', workspace_text, re.MULTILINE)
+    if not match:
+        sys.exit("Failed to determine ENVOY_SHA from proxy WORKSPACE")
+    return match.group(1)
+
+
+def extract_envoy_patch_files(proxy_dir: Path) -> list[Path]:
+    workspace_text = (proxy_dir / "WORKSPACE").read_text()
+    match = re.search(
+        r'http_archive\(\s+name = "envoy",.*?patches = \[(.*?)\]',
+        workspace_text,
+        re.DOTALL,
+    )
+    if not match:
+        return []
+
+    patch_files = [
+        proxy_dir / "bazel" / patch_name
+        for patch_name in re.findall(r'"//bazel:([^"]+\.patch)"', match.group(1))
+    ]
+    return [patch_file for patch_file in patch_files if patch_file.is_file()]
+
+
+def apply_envoy_dependency_import_patches(proxy_dir: Path, envoy_dir: Path) -> None:
+    for patch_file in extract_envoy_patch_files(proxy_dir):
+        patch_text = patch_file.read_text()
+        if "dependency_imports.bzl" not in patch_text:
+            continue
+        print(f"Applying Envoy dependency patch {patch_file.relative_to(proxy_dir)}")
+        run(["git", "apply", "--check", str(patch_file)], cwd=envoy_dir)
+        run(["git", "apply", str(patch_file)], cwd=envoy_dir)
+
+
+def load_envoy_dependency_imports(proxy_dir: Path) -> str:
+    workspace_text = (proxy_dir / "WORKSPACE").read_text()
+    envoy_sha = extract_envoy_sha(workspace_text)
+    dependency_imports_url = (
+        "https://raw.githubusercontent.com/envoyproxy/envoy/"
+        f"{envoy_sha}/bazel/dependency_imports.bzl"
+    )
+    with tempfile.TemporaryDirectory(prefix="envoy-dependency-imports-") as tmpdir:
+        envoy_dir = Path(tmpdir)
+        bazel_dir = envoy_dir / "bazel"
+        bazel_dir.mkdir(parents=True, exist_ok=True)
+        dependency_imports = bazel_dir / "dependency_imports.bzl"
+        with urlopen(dependency_imports_url) as resp:
+            dependency_imports.write_text(resp.read().decode("utf-8"))
+        apply_envoy_dependency_import_patches(proxy_dir, envoy_dir)
+        return dependency_imports.read_text()
+
+
+def parse_go_repository_names(dependency_imports_text: str) -> list[str]:
+    repo_names: list[str] = []
+    seen: set[str] = set()
+    in_go_repository = False
+    for line in dependency_imports_text.splitlines():
+        stripped = line.strip()
+        if stripped == "go_repository(":
+            in_go_repository = True
+            continue
+        if not in_go_repository:
+            continue
+        if stripped == ")":
+            in_go_repository = False
+            continue
+        match = re.match(r'name = "([^"]+)"', stripped)
+        if match and match.group(1) not in seen:
+            repo_name = match.group(1)
+            seen.add(repo_name)
+            repo_names.append(repo_name)
+    return repo_names
+
+
+def bazel_build_cmd(targets: list[str]) -> list[str]:
+    cmd = ["bazel", "build", *shlex.split(os.environ.get("BAZEL_BUILD_ARGS", ""))]
+    cmd.append("--keep_going")
+    cmd.append("--")
+    cmd.extend(targets)
+    return cmd
+
+
+def preflight_envoy(version: str) -> None:
+    print("\n=== Preflighting Envoy Go dependencies ===\n")
+    proxy_dir = prepare_proxy_workspace(version)
+    dependency_imports_text = load_envoy_dependency_imports(proxy_dir)
+    repo_names = parse_go_repository_names(dependency_imports_text)
+    if not repo_names:
+        print("No Envoy go_repository entries found for preflight.")
+        return
+
+    targets = [f"@{repo_name}//..." for repo_name in repo_names]
+    print(f"Found {len(repo_names)} Envoy go_repository repo(s) for preflight.")
+    for repo_name in repo_names:
+        print(f"  @{repo_name}")
+
+    batches = chunked(targets, PREFLIGHT_BATCH_SIZE)
+    for batch_number, batch in enumerate(batches, start=1):
+        print(
+            f"\n=== Preflight batch {batch_number}/{len(batches)} "
+            f"({len(batch)} target(s)) ===\n"
+        )
+        run(bazel_build_cmd(batch), cwd=proxy_dir)
+
+    print("\n=== Envoy dependency preflight passed ===\n")
+
+
+def build_envoy(version: str, timeout_minutes: int | None = None) -> bool:
+    """Build Envoy. Returns True if binary was produced, False if timed out."""
+    print("\n=== Building Envoy with FIPS BoringSSL ===\n")
+    proxy_dir = prepare_proxy_workspace(version)
 
     if timeout_minutes is None:
         run("make build_envoy", cwd=proxy_dir)
@@ -375,7 +522,7 @@ def write_summary(
 # Main
 # ===========================================================================
 
-STAGES = ("envoy", "istio", "all")
+STAGES = ("preflight", "envoy", "istio", "all")
 
 
 def main() -> None:
@@ -394,8 +541,9 @@ def main() -> None:
         dest="stage",
         default="all",
         choices=STAGES,
-        help="Build stage: 'envoy' (compile proxy only), 'istio' (images only, "
-        "expects envoy binary at proxy/bazel-bin/envoy), 'all' (default).",
+        help="Build stage: 'preflight' (compile Envoy Go deps only), "
+        "'envoy' (compile proxy only), 'istio' (images only, expects envoy "
+        "binary at proxy/bazel-bin/envoy), 'all' (default).",
     )
     parser.add_argument(
         "--timeout",
@@ -447,6 +595,11 @@ def main() -> None:
     }
     for k, v in config.items():
         print(f"  {k}={v}")
+
+    if stage == "preflight":
+        preflight_envoy(version)
+        print("Envoy dependency preflight complete.")
+        return
 
     # Stage: envoy — just compile the proxy, no docker needed
     if stage in ("envoy", "all"):
