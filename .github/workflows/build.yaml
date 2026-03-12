@@ -49,6 +49,11 @@ jobs:
     name: Build Istio ${{ matrix.istio_version }}
     needs: discover
     if: needs.discover.outputs.versions != '[]'
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
+      pull-requests: write
     strategy:
       fail-fast: false
       max-parallel: 2
