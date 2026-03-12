@@ -1,5 +1,12 @@
 ---
 name: Istio Build Workflow
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch' &&
+    github.event.inputs.istio_version != '' &&
+    format('Build Istio {0}', github.event.inputs.istio_version) ||
+    'Build missing Istio versions'
+  }}
 on:
   schedule:
     - cron: '0 6 * * *'  # Daily at 6am UTC
