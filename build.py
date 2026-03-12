@@ -54,15 +54,23 @@ def run(
         print(f"+ {cmd}")
     else:
         print(f"+ {' '.join(cmd)}")
-    return subprocess.run(
-        cmd,
-        shell=isinstance(cmd, str),
-        env=env,
-        check=check,
-        capture_output=capture,
-        text=True,
-        cwd=cwd,
-    )
+    try:
+        return subprocess.run(
+            cmd,
+            shell=isinstance(cmd, str),
+            env=env,
+            check=check,
+            capture_output=capture,
+            text=True,
+            cwd=cwd,
+        )
+    except subprocess.CalledProcessError as err:
+        if capture:
+            if err.stdout:
+                print(err.stdout, end="" if err.stdout.endswith("\n") else "\n")
+            if err.stderr:
+                print(err.stderr, end="" if err.stderr.endswith("\n") else "\n")
+        raise
 
 
 def find_version_patches(repo_name: str, version: str) -> list[Path]:
@@ -243,8 +251,9 @@ def apply_envoy_dependency_import_patches(proxy_dir: Path, envoy_dir: Path) -> N
         if "dependency_imports.bzl" not in patch_text:
             continue
         print(f"Applying Envoy dependency patch {patch_file.relative_to(proxy_dir)}")
-        run(["git", "apply", "--check", str(patch_file)], cwd=envoy_dir)
-        run(["git", "apply", str(patch_file)], cwd=envoy_dir)
+        resolved_patch = patch_file.resolve()
+        run(["git", "apply", "--check", str(resolved_patch)], cwd=envoy_dir)
+        run(["git", "apply", str(resolved_patch)], cwd=envoy_dir)
 
 
 def load_envoy_dependency_imports(proxy_dir: Path) -> str:
@@ -287,6 +296,47 @@ def parse_go_repository_names(dependency_imports_text: str) -> list[str]:
     return repo_names
 
 
+def parse_bazel_label_repo_name(label: str) -> str | None:
+    normalized = label.removeprefix("@")
+    normalized = normalized.removeprefix("@")
+    if "//" not in normalized:
+        return None
+    return normalized.split("//", 1)[0]
+
+
+def normalize_bazel_label(label: str) -> str:
+    if label.startswith("@@"):
+        return f"@{label[2:]}"
+    return label
+
+
+def query_envoy_external_go_targets(proxy_dir: Path) -> list[str]:
+    query = 'kind("go_(binary|library|proto_library)", deps(//:envoy))'
+    result = run(
+        [
+            "bazel",
+            "cquery",
+            *shlex.split(os.environ.get("BAZEL_BUILD_ARGS", "")),
+            "--output=label",
+            query,
+        ],
+        capture=True,
+        cwd=proxy_dir,
+    )
+
+    external_targets: list[str] = []
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        label = normalize_bazel_label(line.strip())
+        if not label.startswith("@"):
+            continue
+        if label in seen:
+            continue
+        seen.add(label)
+        external_targets.append(label)
+    return external_targets
+
+
 def bazel_build_cmd(targets: list[str]) -> list[str]:
     cmd = ["bazel", "build", *shlex.split(os.environ.get("BAZEL_BUILD_ARGS", ""))]
     cmd.append("--keep_going")
@@ -299,14 +349,33 @@ def preflight_envoy(version: str) -> None:
     print("\n=== Preflighting Envoy Go dependencies ===\n")
     proxy_dir = prepare_proxy_workspace(version)
     dependency_imports_text = load_envoy_dependency_imports(proxy_dir)
-    repo_names = parse_go_repository_names(dependency_imports_text)
-    if not repo_names:
-        print("No Envoy go_repository entries found for preflight.")
+    dependency_repo_names = parse_go_repository_names(dependency_imports_text)
+    if not dependency_repo_names:
+        print(
+            "No Envoy go_repository entries found while validating dependency patches."
+        )
         return
 
-    targets = [f"@{repo_name}//..." for repo_name in repo_names]
-    print(f"Found {len(repo_names)} Envoy go_repository repo(s) for preflight.")
-    for repo_name in repo_names:
+    targets = query_envoy_external_go_targets(proxy_dir)
+    if not targets:
+        print("No external Go targets reachable from //:envoy; skipping preflight.")
+        return
+
+    target_repo_names: list[str] = []
+    seen_repo_names: set[str] = set()
+    for target in targets:
+        repo_name = parse_bazel_label_repo_name(target)
+        if not repo_name or repo_name in seen_repo_names:
+            continue
+        seen_repo_names.add(repo_name)
+        target_repo_names.append(repo_name)
+
+    print(
+        "Found "
+        f"{len(targets)} external Go target(s) across "
+        f"{len(target_repo_names)} repo(s) for preflight."
+    )
+    for repo_name in target_repo_names:
         print(f"  @{repo_name}")
 
     batches = chunked(targets, PREFLIGHT_BATCH_SIZE)

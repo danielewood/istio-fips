@@ -143,6 +143,12 @@ uv run ./build.py --version 1.29.1 --stage preflight
 
 This stage is meant to catch missing Envoy Go repository metadata, Gazelle resolve hints, and strict-deps errors before `pass 1` starts the long C++/Envoy build.
 
+Preflight behavior matters:
+
+- It should validate the real `//:envoy` dependency graph, not wildcard every package in every external Go repo.
+- Prefer discovering the external Go labels reachable from `deps(//:envoy)` and building those exact labels.
+- Avoid `@repo//...` wildcards for large external repos because they pull in upstream `testdata`, example packages, and partial Bazel packages that the actual Envoy build never touches.
+
 Full builds are optional for patch authoring if they are too expensive, but apply checks are not optional.
 
 ## Updating An Existing Patch
