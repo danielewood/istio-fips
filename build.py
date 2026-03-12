@@ -305,6 +305,7 @@ def parse_bazel_label_repo_name(label: str) -> str | None:
 
 
 def normalize_bazel_label(label: str) -> str:
+    label = re.sub(r" \([^)]+\)$", "", label)
     if label.startswith("@@"):
         return f"@{label[2:]}"
     return label
